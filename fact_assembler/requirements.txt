@@ -1,0 +1,10 @@
+# 离线事实装配器依赖
+#
+# 运行期唯一第三方依赖是 DuckDB。本环境无 pip, 已把官方 manylinux cp311
+# wheel 解压到 vendor/duckdb_pkg, 由 bootstrap.py 显式加入 sys.path,
+# 因此无需安装即可用 `python3 -I` 运行。
+#
+# 联网环境也可改用标准安装 (任选其一):
+#   python3 -m pip install duckdb==1.5.6
+#   pip install -r requirements.txt
+duckdb==1.5.6
