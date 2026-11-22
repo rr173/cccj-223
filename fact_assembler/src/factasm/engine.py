@@ -77,28 +77,32 @@ class DuckDBEngine:
         contract_gens: list[Generation],
         transactions: list[ParsedTransaction],
     ) -> None:
-        self.con.executemany(
-            "INSERT INTO stg_customer_generations VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [_gen_row(g) for g in customer_gens],
-        )
-        self.con.executemany(
-            "INSERT INTO stg_contract_generations VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [_gen_row(g) for g in contract_gens],
-        )
-        self.con.executemany(
-            "INSERT INTO stg_transactions VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    t.txn_row_id,
-                    t.source_row_no,
-                    t.event_time,
-                    t.customer_key,
-                    t.contract_key,
-                    _to_decimal(t.amount),
-                )
-                for t in transactions
-            ],
-        )
+        # executemany 拒绝空参数集: 空批次 (如合法的空交易版本) 跳过对应插入
+        if customer_gens:
+            self.con.executemany(
+                "INSERT INTO stg_customer_generations VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [_gen_row(g) for g in customer_gens],
+            )
+        if contract_gens:
+            self.con.executemany(
+                "INSERT INTO stg_contract_generations VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [_gen_row(g) for g in contract_gens],
+            )
+        if transactions:
+            self.con.executemany(
+                "INSERT INTO stg_transactions VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        t.txn_row_id,
+                        t.source_row_no,
+                        t.event_time,
+                        t.customer_key,
+                        t.contract_key,
+                        _to_decimal(t.amount),
+                    )
+                    for t in transactions
+                ],
+            )
 
     def run_join(self) -> list[dict[str, Any]]:
         """执行半开区间连接并返回每行的原始匹配结果 (含多匹配/未匹配)。"""

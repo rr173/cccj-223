@@ -65,3 +65,43 @@ class ReferenceCheckError(FactAssemblerError):
     """DuckDB 关系计算与独立参考实现结果不一致 (防御性自检失败)。"""
 
     code = "REFERENCE_CHECK_MISMATCH"
+
+
+# --------------------------------------------------------------------------- #
+# 月结分摊 (allocate) 相关异常
+# --------------------------------------------------------------------------- #
+class AllocationError(FactAssemblerError):
+    """分摊账簿无法交付的基类; 任何失败都不会留下可被当成成品的目标文件。"""
+
+    code = "ALLOCATION_ERROR"
+
+
+class InvalidRulesError(AllocationError):
+    """分摊规则本身无效: 重复节点/边/合同入口、未声明节点、非法权重、
+    出边基点之和不为 10000、或图中任意环 (含未被交易使用的部分)。"""
+
+    code = "INVALID_ALLOCATION_RULES"
+
+
+class VersionNotFoundError(AllocationError):
+    """指定的已发布版本不存在。"""
+
+    code = "VERSION_NOT_FOUND"
+
+
+class FactDatabaseNotFoundError(AllocationError):
+    """事实库文件本身不存在。"""
+
+    code = "FACT_DB_NOT_FOUND"
+
+
+class MissingRootEntryError(AllocationError):
+    """所选版本中存在交易, 其合同世代在规则 roots 中没有入口。"""
+
+    code = "MISSING_ROOT_ENTRY"
+
+
+class LedgerExistsError(AllocationError):
+    """目标账簿文件已存在; 为防误覆盖, 拒绝交付。"""
+
+    code = "LEDGER_EXISTS"

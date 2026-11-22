@@ -13,8 +13,15 @@ from .errors import (
     BatchNotFoundError,
     AssemblyRejected,
     ReferenceCheckError,
+    AllocationError,
+    InvalidRulesError,
+    VersionNotFoundError,
+    FactDatabaseNotFoundError,
+    MissingRootEntryError,
+    LedgerExistsError,
 )
 from .assembler import FactAssembler, AssemblyResult
+from .allocation import AllocationRules, AllocationResult, allocate, load_rules_file
 
 __all__ = [
     "FactAssembler",
@@ -25,4 +32,14 @@ __all__ = [
     "BatchNotFoundError",
     "AssemblyRejected",
     "ReferenceCheckError",
+    "AllocationError",
+    "InvalidRulesError",
+    "VersionNotFoundError",
+    "FactDatabaseNotFoundError",
+    "MissingRootEntryError",
+    "LedgerExistsError",
+    "AllocationRules",
+    "AllocationResult",
+    "allocate",
+    "load_rules_file",
 ]

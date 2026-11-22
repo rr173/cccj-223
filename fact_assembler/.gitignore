@@ -4,6 +4,7 @@ run/
 *.duckdb
 *.duckdb.wal
 *.duckdb.tmp
+*.duckdb.tmp-*
 staging/
 
 # Python

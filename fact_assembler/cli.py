@@ -1,4 +1,4 @@
-"""命令行接口: 批次登记/装配/查询/追溯/清理。
+"""命令行接口: 批次登记/装配/查询/追溯/清理/月结分摊。
 
 示例 (均以 `python3 -I cli.py ...` 运行, 路径显式传入):
   python3 -I cli.py register --db run/warehouse.duckdb --kind customer \
@@ -6,6 +6,8 @@
   python3 -I cli.py assemble --db run/warehouse.duckdb \
       --customer-batch C_B1 --contract-batch K_B1 --transaction-batch T_B1
   python3 -I cli.py trace --db run/warehouse.duckdb --txn TXN-007
+  python3 -I cli.py allocate --db run/warehouse.duckdb --version ver-... \
+      --rules rules.json --out run/ledger.duckdb
 """
 from __future__ import annotations
 
@@ -22,10 +24,13 @@ if str(_PROJECT_ROOT) not in sys.path:
 import bootstrap  # noqa: F401,E402  路径装配必须先于 factasm 导入
 
 from factasm import (
+    AllocationError,
     AssemblyRejected,
     BatchConflictError,
     BatchNotFoundError,
     FactAssembler,
+    allocate,
+    load_rules_file,
 )
 from factasm.sources import register_batch
 
@@ -119,6 +124,18 @@ def cmd_check(args) -> int:
     return 0
 
 
+def cmd_allocate(args) -> int:
+    rules = load_rules_file(args.rules)
+    result = allocate(
+        args.db,
+        version_id=args.version,
+        rules=rules,
+        out_path=args.out,
+    )
+    _print(result.as_dict())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="offline fact assembler")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -173,6 +190,16 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--kind", required=True, choices=["customer", "contract", "transaction"])
     k.add_argument("--batch", required=True)
     k.set_defaults(func=cmd_check)
+
+    al = sub.add_parser(
+        "allocate",
+        help="month-end allocation: deliver a standalone ledger for one published version",
+    )
+    al.add_argument("--db", required=True, help="fact database (opened read-only)")
+    al.add_argument("--version", required=True, help="published version_id to allocate")
+    al.add_argument("--rules", required=True, help="JSON allocation rules file")
+    al.add_argument("--out", required=True, help="target ledger .duckdb (must not exist)")
+    al.set_defaults(func=cmd_allocate)
     return p
 
 
@@ -183,6 +210,9 @@ def main(argv: list[str] | None = None) -> int:
     except (BatchConflictError, BatchNotFoundError) as exc:
         _print({"error": exc.code, "message": exc.message, "details": exc.details})
         return 4
+    except AllocationError as exc:
+        _print({"error": exc.code, "message": exc.message, "details": exc.details})
+        return 5
 
 
 if __name__ == "__main__":
