@@ -29,8 +29,12 @@ from factasm import (
     BatchConflictError,
     BatchNotFoundError,
     FactAssembler,
+    ReconciliationError,
     allocate,
+    initialize_state,
     load_rules_file,
+    reconcile_batch,
+    verify_state,
 )
 from factasm.sources import register_batch
 
@@ -136,6 +140,25 @@ def cmd_allocate(args) -> int:
     return 0
 
 
+def cmd_reconcile(args) -> int:
+    """初始化勾稽库 (--ledger) 或应用一批回单变更 (--seq/--changes)。"""
+    if args.ledger is not None:
+        if args.seq is not None or args.changes is not None:
+            _print({"error": "USAGE", "message":
+                    "--ledger initializes; do not combine with --seq/--changes"})
+            return 2
+        result = initialize_state(args.ledger, args.state)
+        _print(result.as_dict())
+        return 0
+    if args.seq is None or args.changes is None:
+        _print({"error": "USAGE", "message":
+                "provide --ledger to initialize, or both --seq and --changes"})
+        return 2
+    result = reconcile_batch(args.state, seq=args.seq, changes_path=args.changes)
+    _print(result.as_dict())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="offline fact assembler")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -200,6 +223,20 @@ def build_parser() -> argparse.ArgumentParser:
     al.add_argument("--rules", required=True, help="JSON allocation rules file")
     al.add_argument("--out", required=True, help="target ledger .duckdb (must not exist)")
     al.set_defaults(func=cmd_allocate)
+
+    rc = sub.add_parser(
+        "reconcile",
+        help="receipt reconciliation ledger: initialize from a ledger, then apply batches",
+    )
+    rc.add_argument("--state", required=True,
+                    help="reconciliation state .duckdb (created on --ledger init)")
+    rc.add_argument("--ledger", default=None,
+                    help="allocate ledger to initialize from (read-only; state must not exist)")
+    rc.add_argument("--seq", type=int, default=None,
+                    help="batch number, contiguous from 1")
+    rc.add_argument("--changes", default=None,
+                    help="JSONL changes file for this batch")
+    rc.set_defaults(func=cmd_reconcile)
     return p
 
 
@@ -213,6 +250,9 @@ def main(argv: list[str] | None = None) -> int:
     except AllocationError as exc:
         _print({"error": exc.code, "message": exc.message, "details": exc.details})
         return 5
+    except ReconciliationError as exc:
+        _print({"error": exc.code, "message": exc.message, "details": exc.details})
+        return 6
 
 
 if __name__ == "__main__":

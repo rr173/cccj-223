@@ -19,9 +19,23 @@ from .errors import (
     FactDatabaseNotFoundError,
     MissingRootEntryError,
     LedgerExistsError,
+    ReconciliationError,
+    ReconcileLedgerError,
+    StateExistsError,
+    StateNotFoundError,
+    BatchSequenceError,
+    ChangesValidationError,
 )
 from .assembler import FactAssembler, AssemblyResult
 from .allocation import AllocationRules, AllocationResult, allocate, load_rules_file
+from .reconciliation import (
+    ReconcileBatchResult,
+    ReconcileInitResult,
+    initialize_state,
+    parse_changes,
+    reconcile_batch,
+    verify_state,
+)
 
 __all__ = [
     "FactAssembler",
@@ -38,8 +52,20 @@ __all__ = [
     "FactDatabaseNotFoundError",
     "MissingRootEntryError",
     "LedgerExistsError",
+    "ReconciliationError",
+    "ReconcileLedgerError",
+    "StateExistsError",
+    "StateNotFoundError",
+    "BatchSequenceError",
+    "ChangesValidationError",
     "AllocationRules",
     "AllocationResult",
     "allocate",
     "load_rules_file",
+    "ReconcileBatchResult",
+    "ReconcileInitResult",
+    "initialize_state",
+    "parse_changes",
+    "reconcile_batch",
+    "verify_state",
 ]

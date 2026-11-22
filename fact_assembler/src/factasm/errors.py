@@ -105,3 +105,42 @@ class LedgerExistsError(AllocationError):
     """目标账簿文件已存在; 为防误覆盖, 拒绝交付。"""
 
     code = "LEDGER_EXISTS"
+
+
+# --------------------------------------------------------------------------- #
+# 回单勾稽台账 (reconcile) 相关异常
+# --------------------------------------------------------------------------- #
+class ReconciliationError(FactAssemblerError):
+    """勾稽台账无法初始化/应用批次的基类; 拒绝时台账不改变。"""
+
+    code = "RECONCILIATION_ERROR"
+
+
+class ReconcileLedgerError(ReconciliationError):
+    """作为固定入账侧的分摊账簿不可用 (不存在、不是 allocate 交付的账簿等)。"""
+
+    code = "RECONCILE_LEDGER_INVALID"
+
+
+class StateExistsError(ReconciliationError):
+    """勾稽库已存在; 已有勾稽库不接受重新初始化。"""
+
+    code = "RECONCILE_STATE_EXISTS"
+
+
+class StateNotFoundError(ReconciliationError):
+    """勾稽库不存在或尚未初始化。"""
+
+    code = "RECONCILE_STATE_NOT_FOUND"
+
+
+class BatchSequenceError(ReconciliationError):
+    """批号不连续、回退或内容冲突: 只接受从 1 连续递增且未应用过的批号。"""
+
+    code = "RECONCILE_BATCH_SEQUENCE"
+
+
+class ChangesValidationError(ReconciliationError):
+    """变更文件格式错误、引用不存在的明细、重复修改/关联或撤销未知回单。"""
+
+    code = "RECONCILE_BATCH_REJECTED"

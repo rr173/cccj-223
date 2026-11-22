@@ -57,13 +57,18 @@ fact_assembler/
 │   ├── reference.py            # 独立纯 Python 区间枚举 + 证据
 │   ├── engine.py               # DuckDB staging 半开区间连接
 │   ├── assembler.py            # 门面: 编排/交叉核对/原子发布/查询/追溯/清理
-│   └── allocation.py           # 月结分摊: 规则校验/合并份额/最大余数/账簿交付
+│   ├── allocation.py           # 月结分摊: 规则校验/合并份额/最大余数/账簿交付
+│   └── reconciliation.py       # 回单勾稽台账: 连通分组/增量重算/批次事务
 └── tests/
     ├── fixtures_builder.py     # 手工夹具: C 1月/3月修订, K 2月切换 + 异常行
     ├── independent_checker.py  # 第三独立预言机
+    ├── reconcile_fixtures.py   # 勾稽样例: A=40/B=60 账簿 + 初始化 (运行时生成)
+    ├── reconcile_independent.py# 勾稽独立预言机: 朴素并查集重算全图
+    ├── reconcile_demo.py       # 从造数据到拆组查询的可复跑演示
     ├── test_unit.py            # 边界/重叠/去重/校验防御路径 (14 项)
     ├── test_e2e.py             # 端到端 75 项
     ├── test_allocate.py        # 月结分摊 68 项
+    ├── test_reconcile.py       # 回单勾稽 77 项
     └── crash_entry.py          # 提交前 os._exit 强退注入入口
 ```
 
@@ -123,6 +128,8 @@ python3 -I cli.py allocate    --db run/wh.duckdb --version <ver-...> \
 python3 -I tests/test_unit.py      # 14 项防御路径
 python3 -I tests/test_e2e.py       # 75 项端到端
 python3 -I tests/test_allocate.py  # 68 项月结分摊
+python3 -I tests/test_reconcile.py  # 77 项回单勾稽
+python3 -I tests/reconcile_demo.py  # 造数据 -> 拆组 -> 直接查询的可复跑演示
 ```
 
 | 题目要求 | 覆盖位置 |
@@ -150,6 +157,15 @@ python3 -I tests/test_allocate.py  # 68 项月结分摊
 | 缺入口/循环/版本不存在/目标已存在拒绝出账 | allocate §7 |
 | 空版本交付空账簿、账簿脱离事实库自足对账 | allocate §8/§9 |
 | 分摊不改变事实库 (字节级指纹) | allocate §10 |
+| 拆组/改接别组 (题例 A=40/B=60) | reconcile §2 |
+| 单边组零额不报相符 | reconcile §3 |
+| 多张回单覆盖同一明细只计一次 | reconcile §4 |
+| 重复改/重复关联/坏引用/坏格式整批拒绝 | reconcile §5 |
+| 批中途非法关联: 合法行也不落库 | reconcile §6 |
+| 批号连续、同字节重送幂等、换内容拒绝 | reconcile §7 |
+| 撤销回单连带关联、明细回到单边组 | reconcile §8 |
+| 大量无关组时只触及受影响组 (成员/汇总逐行不变) | reconcile §9 |
+| 独立全图重算核对成员与差额 | reconcile_independent.py + 各节 |
 
 ## 7. 安全说明
 
@@ -264,3 +280,156 @@ python3 -I tests/test_allocate.py   # 68 项
 秒级完成——证明不枚举路径、不按交易重复展开）；缺入口/循环规则拒绝出账且
 不留成品；空版本空账簿；账簿脱离事实库独立对账；分摊前后事实库字节级不变。
 
+
+## 9. 回单勾稽台账 (`reconcile`)
+
+支付渠道的回单不逐笔对应：一张回单可覆盖多条入账明细，一条明细也可被多张
+分期回单共同覆盖；渠道只给**回单总额**与**关联明细**，不给每条关联的拆分金额。
+`reconcile` 把回单与 `allocate` 账簿的 `allocation` 明细持续对到一起，**不从
+金额猜关联，也不重新分摊或改写账簿**。
+
+### 9.1 用法
+
+```bash
+# 初始化: 只接收一份现有 allocate 账簿 (原账簿只读, 之后不再打开)
+python3 -I cli.py reconcile --state run/recon-2026-04.duckdb \
+    --ledger run/ledger-2026-04.duckdb
+
+# 后续批次: 只需勾稽库 + 连续批号 + JSONL, 无需原账簿/事实库
+python3 -I cli.py reconcile --state run/recon-2026-04.duckdb \
+    --seq 1 --changes receipts-001.jsonl
+```
+
+初始化把账簿的 `version_id`、`transaction_batch_id`、规则摘要（`rules_sha256`）
+与 canonical 规则 JSON 一并存入 `recon_metadata`，并按只读方式复制每条
+`allocation` 明细 `(txn_row_id, cost_center)` 与有符号整数 `amount_units`。
+已有勾稽库拒绝重新初始化（`RECONCILE_STATE_EXISTS`）；原账簿字节全程不变。
+
+### 9.2 变更文件 (JSONL，每行一个回单操作)
+
+```json
+{"op":"upsert","receipt_id":"X","amount_units":40000000,"links":[{"txn_row_id":"A","cost_center":"CC_EXAMPLE"}]}
+{"op":"upsert","receipt_id":"Y","amount_units":60000000,"links":[{"txn_row_id":"A","cost_center":"CC_EXAMPLE"},{"txn_row_id":"B","cost_center":"CC_EXAMPLE"}]}
+{"op":"delete","receipt_id":"X"}
+```
+
+- `amount_units` 是与账簿同精度的**有符号整数**（原金额 ×10⁶），不重算、不换算。
+- `upsert` **整行替换**该回单原来的金额与全部关联（`links` 可为空数组）。
+- `delete` **只能**有 `op` 与 `receipt_id` 两个键，撤销回单及所有关联。
+- 回单 ID 为非空字符串、区分大小写；拒绝控制字符。
+- 拒绝：同批重复修改同一回单、同批同回单重复关联、关联指向账簿中不存在的
+  明细键、撤销未知回单、金额非整数/布尔/字符串、未知键、未知 op、非 JSON 行。
+
+批号从 1 连续递增：跳号、回退、已接收批号换内容 → `RECONCILE_BATCH_SEQUENCE`；
+已接收批号以**完全相同的文件字节**重送 → 幂等返回 `REUSED`，不重复应用。
+一批要么整批成功、要么整批拒绝：回单、关联、成员、汇总与批号在**同一事务**
+内更新，拒绝时全部保持原状（目录/状态库都不留半批数据）。
+
+### 9.3 分组语义
+
+- 有直接或间接关联的回单与入账明细属于同一组（无向连通分量）。
+- 每个现存回单和账簿里每条明细都恰出现一次；没有任何关联的节点各自成组。
+- 组的两侧金额：`receipt_total` 只对回单求和，`detail_total` 只对明细求和
+  （多张回单关联到同一明细时该明细**只计一次**），
+  `difference = receipt_total - detail_total`。
+- 状态：`ONLY_RECEIPT`（只有回单）/ `ONLY_DETAIL`（只有明细）/ `MATCHED`
+  （两侧都有且差额为 0）/ `DIFFERENCE`（两侧都有但不等）。**单边组即使金额
+  为零也绝不报 `MATCHED`**。
+
+### 9.4 可查询的视图（财务直接用 DuckDB 打开勾稽库）
+
+| 视图 | 内容 |
+| --- | --- |
+| `recon_group_summary` | 每组：状态、两侧合计、差额、回单数/明细数、最后变更批号 |
+| `recon_group_members` | 组内每个节点：`member_kind`、`receipt_id`、`txn_row_id`、`cost_center`、`amount_units`、回单的 `direct_peer_count`（直接关联数） |
+| `recon_receipt_links` | 回单的**直接**关联：回单 ID/金额 → 明细键/金额 |
+| `recon_member_groups` | 成员 → 当前 `group_id`（回单与明细的 key 形状无关，必须经它转接） |
+| `recon_batches` | 已接收批次与内容指纹 |
+| `recon_metadata` | 账簿版本、交易批次、规则摘要、schema 版本 |
+
+从一条记录查到它所在组和整组成员：
+
+```sql
+-- 从回单 Y 出发
+WITH me AS (SELECT group_id FROM recon_member_groups
+            WHERE member_kind='RECEIPT' AND receipt_id='Y')
+SELECT g.group_id, g.status, g.receipt_total, g.detail_total, g.difference,
+       m.member_kind, m.receipt_id, m.txn_row_id, m.cost_center, m.amount_units,
+       m.direct_peer_count
+FROM recon_group_members m JOIN recon_group_summary g USING (group_id)
+WHERE m.group_id = (SELECT group_id FROM me)
+ORDER BY m.member_kind, m.receipt_id, m.txn_row_id;
+
+-- 从明细 (B, CC_EXAMPLE) 出发
+WITH me AS (SELECT group_id FROM recon_member_groups
+            WHERE member_kind='DETAIL' AND txn_row_id='B'
+              AND cost_center='CC_EXAMPLE')
+SELECT m.* FROM recon_group_members m
+WHERE m.group_id = (SELECT group_id FROM me);
+```
+
+### 9.5 增量重算与可核查范围
+
+初始化可以读全账簿（仅一次）。之后每批只重算**受影响的旧组**：
+
+1. 被改动回单（upsert/delete）原先所在的组；
+2. 本批新关联指向的明细原先所在的组（即使该明细原件被改挂到别处）。
+
+实现只做三次与「本批相关键」等长的定位查询（回单→组、明细→组、受影响组成员），
+再用 `scope = 受影响旧组成员 ∪ 本批新增/回写的节点` 读取**scope 内回单**的当前
+关联，做连通分量；最后只删除/写回这些旧组与新分量。无关组的成员行和汇总行
+不会被执行任何更新、删除或重写。
+
+拓宽范围的可核查依据（不是运行时间）：
+
+- `recon_batch_scope_node`：本批 `scope` 实际包含的节点（按 seq 一行一节点）。
+  测试用它断言 300 个无关回单组一个都没进 scope。
+- `recon_recompute_log`：每个受影响旧组对每个包含其旧成员的新分量各一行
+  （拆组时可见一行→多组），列包括原因、旧成员数/新成员数、保留/移除/新增
+  成员数、本批实际读取的关联行数 `scanned_links`、形成该分量的访问节点数
+  `visited_nodes`。整组消失时 `new_group_id` 为空。
+- `recon_batch_report`：每批的 `affected_old_group_count`、
+  `unaffected_group_count`、`scanned_link_endpoints`、`visited_node_count`。
+
+分组号在批次间尽量沿用：若某旧组的全部存活成员恰好完整落在一个新分量里，
+沿用原 `group_id`；拆组/合并时才分配新号。无关组查询不会因别处的批次换号。
+
+### 9.6 题例：拆组
+
+入账明细 A、B 分别是 40、60；回单 X=40 只指 A，Y=60 同时指 A、B。批次 1 后
+只有一个 `MATCHED` 组（4 个成员）。把 Y 改为只指 B（批次 2）：
+
+```sql
+SELECT group_id, status, receipt_total, detail_total, difference FROM recon_group_summary;
+-- (3, 'MATCHED', 40000000, 40000000, 0)
+-- (4, 'MATCHED', 60000000, 60000000, 0)
+```
+
+得到两个各自相符的组，而不是一个总数不变的旧组。`recon_recompute_log` 会
+为旧组写出两行（分别对新组 3、4），证明拆组实际发生。
+
+### 9.7 错误码
+
+CLI 退出码 6（与 allocate 的 5 区分）：
+
+| 错误码 | 含义 |
+| --- | --- |
+| `RECONCILE_STATE_EXISTS` | 勾稽库已存在，拒绝重新初始化 |
+| `RECONCILE_STATE_NOT_FOUND` | 勾稽库不存在/未初始化 |
+| `RECONCILE_LEDGER_INVALID` | 不是 allocate 交付的账簿（缺 `ledger_meta`/`allocation`） |
+| `RECONCILE_BATCH_SEQUENCE` | 跳号、回退、已接收批号换内容 |
+| `RECONCILE_BATCH_REJECTED` | 变更文件格式/语义/引用错误，整批拒绝 |
+
+### 9.8 可复跑验证
+
+```bash
+python3 -I tests/test_reconcile.py   # 77 项
+python3 -I tests/reconcile_demo.py   # 造数据 -> 批次 1/2 -> 拆组查询, 运行时生成库
+```
+
+覆盖：只读初始化与重复初始化拒绝；题目 A=40/B=60 拆组与改接回原组；单边组
+零额不报相符；同明细多回单只计一次；重复改/重复关联/坏引用/坏格式整批拒绝；
+批中途非法引用时合法行也不落库；批号连续/同字节重送幂等/换内容拒绝；撤销
+回单连带关联；300 个无关小组时 scope 只含 2 个节点、无关组逐行不变、失败批次
+不改变任何组；独立全图重算（`tests/reconcile_independent.py`，朴素并查集，
+不 import factasm 分组代码）在每批前后核对每个成员的组、状态与差额；CLI 退出码。
