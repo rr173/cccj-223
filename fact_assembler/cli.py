@@ -28,11 +28,16 @@ from factasm import (
     AssemblyRejected,
     BatchConflictError,
     BatchNotFoundError,
+    EMPTY_BASE,
     FactAssembler,
+    MirrorError,
     ReconciliationError,
     allocate,
+    apply_delta,
+    export_delta,
     initialize_state,
     load_rules_file,
+    mirror_status,
     reconcile_batch,
     verify_state,
 )
@@ -159,6 +164,30 @@ def cmd_reconcile(args) -> int:
     return 0
 
 
+def cmd_mirror_export(args) -> int:
+    """总部: 从两个指定已发布版本导出差量包 (起点可为 EMPTY)。"""
+    result = export_delta(
+        args.db,
+        base_version=args.base,
+        target_version=args.target,
+        out_path=args.out,
+    )
+    _print(result.as_dict())
+    return 0
+
+
+def cmd_mirror_apply(args) -> int:
+    """站点: 凭差量包把本地 DuckDB 镜像切换到目标版本 (首次以空镜像为起点)。"""
+    result = apply_delta(args.mirror, args.package)
+    _print(result.as_dict())
+    return 0
+
+
+def cmd_mirror_status(args) -> int:
+    _print(mirror_status(args.mirror))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="offline fact assembler")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -237,6 +266,32 @@ def build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--changes", default=None,
                     help="JSONL changes file for this batch")
     rc.set_defaults(func=cmd_reconcile)
+
+    me = sub.add_parser(
+        "mirror-export",
+        help="HQ: export a delta package between two explicit published versions",
+    )
+    me.add_argument("--db", required=True, help="headquarters fact database (opened read-only)")
+    me.add_argument("--base", required=True,
+                    help=f"starting published version_id, or {EMPTY_BASE} for an empty mirror")
+    me.add_argument("--target", required=True, help="target published version_id (must differ from base)")
+    me.add_argument("--out", required=True, help="delta package .json path (must not exist)")
+    me.set_defaults(func=cmd_mirror_export)
+
+    ma = sub.add_parser(
+        "mirror-apply",
+        help="site: apply a delta package to a local DuckDB fact mirror",
+    )
+    ma.add_argument("--mirror", required=True, help="local mirror .duckdb (created on first EMPTY-base apply)")
+    ma.add_argument("--package", required=True, help="delta package .json received from HQ")
+    ma.set_defaults(func=cmd_mirror_apply)
+
+    ms = sub.add_parser(
+        "mirror-status",
+        help="site: read the mirror current version, fingerprint and last apply evidence",
+    )
+    ms.add_argument("--mirror", required=True)
+    ms.set_defaults(func=cmd_mirror_status)
     return p
 
 
@@ -253,6 +308,9 @@ def main(argv: list[str] | None = None) -> int:
     except ReconciliationError as exc:
         _print({"error": exc.code, "message": exc.message, "details": exc.details})
         return 6
+    except MirrorError as exc:
+        _print({"error": exc.code, "message": exc.message, "details": exc.details})
+        return 7
 
 
 if __name__ == "__main__":

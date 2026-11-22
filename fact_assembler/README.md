@@ -58,10 +58,13 @@ fact_assembler/
 │   ├── engine.py               # DuckDB staging 半开区间连接
 │   ├── assembler.py            # 门面: 编排/交叉核对/原子发布/查询/追溯/清理
 │   ├── allocation.py           # 月结分摊: 规则校验/合并份额/最大余数/账簿交付
-│   └── reconciliation.py       # 回单勾稽台账: 连通分组/增量重算/批次事务
+│   ├── reconciliation.py       # 回单勾稽台账: 连通分组/增量重算/批次事务
+│   └── mirror.py               # 离线事实镜像: 双版本差量包/分区指纹/原子切版
 └── tests/
     ├── fixtures_builder.py     # 手工夹具: C 1月/3月修订, K 2月切换 + 异常行
     ├── independent_checker.py  # 第三独立预言机
+    ├── mirror_fixtures.py      # 镜像夹具: 四版本 (删除/1e-6 更正/区间封口/未变行)
+    ├── mirror_independent.py   # 镜像独立预言机: 不 import mirror 代码重算指纹
     ├── reconcile_fixtures.py   # 勾稽样例: A=40/B=60 账簿 + 初始化 (运行时生成)
     ├── reconcile_independent.py# 勾稽独立预言机: 朴素并查集重算全图
     ├── reconcile_demo.py       # 从造数据到拆组查询的可复跑演示
@@ -69,6 +72,7 @@ fact_assembler/
     ├── test_e2e.py             # 端到端 75 项
     ├── test_allocate.py        # 月结分摊 68 项
     ├── test_reconcile.py       # 回单勾稽 77 项
+    ├── test_mirror.py          # 离线事实镜像 72 项
     └── crash_entry.py          # 提交前 os._exit 强退注入入口
 ```
 
@@ -129,6 +133,7 @@ python3 -I tests/test_unit.py      # 14 项防御路径
 python3 -I tests/test_e2e.py       # 75 项端到端
 python3 -I tests/test_allocate.py  # 68 项月结分摊
 python3 -I tests/test_reconcile.py  # 77 项回单勾稽
+python3 -I tests/test_mirror.py    # 72 项离线事实镜像
 python3 -I tests/reconcile_demo.py  # 造数据 -> 拆组 -> 直接查询的可复跑演示
 ```
 
@@ -166,6 +171,17 @@ python3 -I tests/reconcile_demo.py  # 造数据 -> 拆组 -> 直接查询的可�
 | 撤销回单连带关联、明细回到单边组 | reconcile §8 |
 | 大量无关组时只触及受影响组 (成员/汇总逐行不变) | reconcile §9 |
 | 独立全图重算核对成员与差额 | reconcile_independent.py + 各节 |
+| 显式双版本导出差量、可跨中间发布、不从当前版补数 | mirror §10.1/10.2、test_mirror §2 |
+| 只按投影判变化, 批号/请求 id/源行号不进包 | mirror §10.2、test_mirror §4 (REUSE-01) |
+| 每键一笔新增/替换/删除, 删除带明确键; 无变化包可切版 | mirror §10.2、test_mirror §4/§9 |
+| 只导已发布事实, 不导隔离、不重跑装配 | mirror §10.2、test_mirror §1/§4 |
+| 落地前版本 ID+起点指纹双核对 (含重复投递旧包) | mirror §10.4、test_mirror §8 |
+| 落地后按导出端目标指纹核对, 漏删必拒且不前进 | mirror §10.4、test_mirror §7 |
+| 指纹与行序/库布局无关; 独立预言机重算 | mirror §10.3、mirror_independent.py、§10 |
+| 分区按行 ID 哈希, 删除计入; 只读写受影响分区 | mirror §10.5、test_mirror §6 |
+| 首次失败不留可冒充已同步的镜像 | mirror §10.6、test_mirror §3 |
+| 真实删除/百万分之一更正/NULL→具体时间/无关分区未变行 | test_mirror §4/§5/§6 |
+| 直接查总部库目标版投影核对镜像 (不用差量实现造预期) | test_mirror §5 + mirror_independent.py |
 
 ## 7. 安全说明
 
@@ -433,3 +449,124 @@ python3 -I tests/reconcile_demo.py   # 造数据 -> 批次 1/2 -> 拆组查询, 
 回单连带关联；300 个无关小组时 scope 只含 2 个节点、无关组逐行不变、失败批次
 不改变任何组；独立全图重算（`tests/reconcile_independent.py`，朴素并查集，
 不 import factasm 分组代码）在每批前后核对每个成员的组、状态与差额；CLI 退出码。
+
+## 10. 离线事实镜像 (`mirror`)
+
+月结事实发布在总部库, 部分站点不能连总部库、只能定期收一个文件。`mirror` 让
+总部从**两个显式指定的已发布版本**导出一份差量包; 站点只用这份包和本地 DuckDB
+镜像就能切换到目标版。首次收数以**空镜像**为起点, 走完全相同的流程; 不做网络
+传输、不保留镜像历史、不提供多格式支持, 也不做签名认证 (只校验传输与应用的
+一致性)。
+
+### 10.1 镜像投影与分区
+
+镜像以 `txn_row_id` 为键, 只保留 `facts` 的 11 个投影列, **列名与数据类型沿用
+`facts`**: `event_time`/两个 `valid_from` 是 TIMESTAMP, 两个 `valid_to` 可空且
+开放区间末端保持 SQL NULL, `amount` 保持 `DECIMAL(28,6)`。批次 id、请求 id、
+源行号不在投影里 —— 同一行 ID 跨批次复用时, 只按这个投影判断未变还是替换。
+
+逻辑分区共 256 个:
+
+```
+partition_id = sha256(txn_row_id 的 UTF-8 字节) 的首字节   # 0..255
+```
+
+### 10.2 差量包语义与导出
+
+导出必须显式给出起点和**不同的**目标版本, 可以跨过中间发布, 绝不从当前版本补
+数据; 起点传 `EMPTY` 表示空镜像 (首次收数)。逐键比较两版投影后, 每个有差异的
+键只发一笔变化: `upsert` (新增或整行替换) 或 `delete` (必须带明确的键); 投影
+完全相同的键不发正文。两版投影完全一致时, 包可以没有任何行变更, 仍可切版。
+导出只读已发布 `facts`, 不读隔离清单、不重跑装配; 目标文件已存在则拒绝。
+
+```bash
+# 首次: 空镜像 -> 旧版
+python3 -I cli.py mirror-export --db run/hq.duckdb \
+    --base EMPTY --target ver-OLD --out run/pkgs/empty_old.json
+# 跳过一个中间发布: 旧版 -> 目标版
+python3 -I cli.py mirror-export --db run/hq.duckdb \
+    --base ver-OLD --target ver-TARGET --out run/pkgs/old_target.json
+```
+
+### 10.3 内容指纹定义 (与文件行序、库文件布局无关)
+
+每个分区把区内每行按投影列固定顺序序列化为一条 JSON 数组 (时间统一微秒文本,
+金额统一恰带 6 位小数的定点文本, NULL 为 JSON null), 行文本按字典序排序后逐行
+追加字节与 `\n` 求 SHA-256, 得到**分区摘要** (空分区=空输入摘要)。镜像整体
+**内容指纹** = 对 256 个分区按分区号升序, 逐区追加「2 字节大端分区号 + 32 字节
+分区摘要」再求 SHA-256。空镜像指纹由此自然确定。指纹只取决于逻辑内容, 与包内
+行序、DuckDB 文件物理布局无关。
+
+### 10.4 两道内容核对 (期望值来自导出端事实, 不从包内操作反推)
+
+1. **落地前**: 镜像当前版本 ID 必须等于包声明的起点, 且镜像内容指纹必须等于
+   包内起点指纹目录合成的整体指纹 (只读 256 行摘要目录, 不扫事实)。对已前进的
+   镜像重复投递旧包在这里被拒 (`MIRROR_BASE_MISMATCH`)。
+2. **落地后、切版前**: 只重读受影响分区的事实重算分区摘要, 与包内由导出端
+   **根据目标事实**算出的目标分区摘要逐区核对, 再合成整体指纹与包声明的目标
+   指纹核对。因此「少一条删除但沿用原目标指纹」的包必然失败
+   (`MIRROR_TARGET_CHECK_FAILED`)。
+
+### 10.5 分区局部性 (可核查的实际读写范围)
+
+受影响分区由**键的哈希**判定, 包内分区声明不能替代该判定, 删除同样计入; 声明
+与推导不符直接判无效包。正常更新只读固定 256 行的摘要目录、只重读受影响分区
+的事实、只重写受影响分区, 不重扫未受影响分区、不逐行校验全表。每次应用把实际
+触及的分区和每区读/插/更/删行数写入 `mirror_apply_partition_touch`, 测试据此
+断言 (不是打印预期范围, 也不用耗时替代)。镜像事实、摘要目录、当前版本/指纹与
+应用证据在**单个事务**内一起落定。
+
+### 10.6 应用、失败语义与查询
+
+```bash
+# 站点应用 (镜像不存在时只能用 EMPTY 起点的包, 临时库核对通过后原子就位)
+python3 -I cli.py mirror-apply --mirror run/site.duckdb --package run/pkgs/empty_old.json
+python3 -I cli.py mirror-apply --mirror run/site.duckdb --package run/pkgs/old_target.json
+python3 -I cli.py mirror-status  --mirror run/site.duckdb
+```
+
+起点不符、无效包、目标核对失败一律回滚: 原镜像仍可查且版本不前进; 首次失败不
+留下任何可冒充已同步的镜像文件。错误码统一以退出码 7 返回
+(`MIRROR_VERSION_NOT_FOUND` / `MIRROR_INVALID_BASE` / `MIRROR_PACKAGE_INVALID` /
+`MIRROR_BASE_MISMATCH` / `MIRROR_TARGET_CHECK_FAILED` / `MIRROR_STATE_INVALID`)。
+
+直接用 DuckDB 查询当前版本和镜像行:
+
+```bash
+python3 -I - <<'EOF'
+import sys; sys.path.insert(0, "vendor/duckdb_pkg")
+import duckdb
+con = duckdb.connect("run/site.duckdb", read_only=True)
+print(con.execute("SELECT current_version, content_fingerprint FROM mirror_state").fetchall())
+print(con.execute("""
+    SELECT txn_row_id, contract_key, amount, contract_valid_to
+    FROM mirror_fact_projection ORDER BY txn_row_id
+""").fetchall())
+# 本次收数实际触及的分区与每区读/写/删行数
+print(con.execute("""
+    SELECT partition_id, rows_read, rows_inserted, rows_updated, rows_deleted
+    FROM mirror_apply_partition_touch ORDER BY partition_id
+""").fetchall())
+con.close()
+EOF
+```
+
+镜像库表/视图: `mirror_state` (当前版本与整体指纹)、`mirror_facts` (含内部
+`partition_id` 的事实表)、`mirror_fact_projection` (与 `facts` 同列名同类型的
+投影视图)、`mirror_partition_catalog` (恒 256 行的摘要目录)、`mirror_apply_log`
+与 `mirror_apply_partition_touch` (应用证据)。站点经本功能建镜像/更新, 平时
+只读; 不检测有人绕开工具直接改库。
+
+### 10.7 可复跑验证
+
+```bash
+python3 -I tests/test_mirror.py   # 72 项
+```
+
+小数据主线: 总部发布四个版本 (每版带隔离行) → 站点从空镜像装入旧版 → 跳过一个
+已发布版本切到目标。目标版包含真实删除、同一键金额仅差百万分之一、区间末端
+NULL→具体时间的更正, 以及一批内容未变的行 (含落在完全无关分区的 keeper 和跨
+版本行 ID 复用)。测试直接查询总部库目标版的投影列、用不 import `mirror` 代码的
+独立预言机 (`tests/mirror_independent.py`) 重算指纹来核对镜像; 另构造「少一笔
+删除但沿用原目标指纹」的包, 断言落地后核对失败且版本与数据不变。生成的 DuckDB
+文件与包都落在 `run_mirror/`, 已被 `.gitignore` 覆盖, 不提交。

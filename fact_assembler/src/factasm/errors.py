@@ -144,3 +144,50 @@ class ChangesValidationError(ReconciliationError):
     """变更文件格式错误、引用不存在的明细、重复修改/关联或撤销未知回单。"""
 
     code = "RECONCILE_BATCH_REJECTED"
+
+
+# --------------------------------------------------------------------------- #
+# 离线事实镜像 (mirror) 相关异常
+# --------------------------------------------------------------------------- #
+class MirrorError(FactAssemblerError):
+    """差量包导出/应用失败的基类; 应用失败时镜像保持可查且版本不前进。"""
+
+    code = "MIRROR_ERROR"
+
+
+class MirrorVersionNotFoundError(MirrorError):
+    """导出引用的起点/目标版本在事实库中不存在, 或不是已发布版本。"""
+
+    code = "MIRROR_VERSION_NOT_FOUND"
+
+
+class MirrorInvalidBaseError(MirrorError):
+    """导出参数无效: 起点与目标相同、目标不是区别于起点的另一个版本等。"""
+
+    code = "MIRROR_INVALID_BASE"
+
+
+class MirrorPackageInvalidError(MirrorError):
+    """差量包结构/内容无效 (JSON 损坏、未知字段、操作缺键、声明与按键推导不符等)。"""
+
+    code = "MIRROR_PACKAGE_INVALID"
+
+
+class MirrorBaseMismatchError(MirrorError):
+    """落地前核对失败: 本地镜像的版本 ID 或内容指纹与包声明的起点不符
+    (包括对已前进镜像重复投递旧包)。镜像原样保留。"""
+
+    code = "MIRROR_BASE_MISMATCH"
+
+
+class MirrorTargetCheckError(MirrorError):
+    """落地后核对失败: 更新后的镜像内容指纹与导出端按目标事实算出的指纹不符。
+    事务回滚, 镜像版本与数据均不变。"""
+
+    code = "MIRROR_TARGET_CHECK_FAILED"
+
+
+class MirrorStateInvalidError(MirrorError):
+    """给定的 DuckDB 文件存在但不是本功能建立/维护的镜像。"""
+
+    code = "MIRROR_STATE_INVALID"

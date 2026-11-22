@@ -25,6 +25,13 @@ from .errors import (
     StateNotFoundError,
     BatchSequenceError,
     ChangesValidationError,
+    MirrorError,
+    MirrorVersionNotFoundError,
+    MirrorInvalidBaseError,
+    MirrorPackageInvalidError,
+    MirrorBaseMismatchError,
+    MirrorTargetCheckError,
+    MirrorStateInvalidError,
 )
 from .assembler import FactAssembler, AssemblyResult
 from .allocation import AllocationRules, AllocationResult, allocate, load_rules_file
@@ -35,6 +42,21 @@ from .reconciliation import (
     parse_changes,
     reconcile_batch,
     verify_state,
+)
+from .mirror import (
+    EMPTY_BASE,
+    PARTITION_COUNT,
+    PROJECTION_COLUMNS,
+    ApplyResult,
+    ExportResult,
+    apply_delta,
+    canonical_row_line,
+    combine_partition_digests,
+    digest_partition,
+    export_delta,
+    load_package,
+    mirror_status,
+    partition_of,
 )
 
 __all__ = [
@@ -68,4 +90,25 @@ __all__ = [
     "parse_changes",
     "reconcile_batch",
     "verify_state",
+    # 离线事实镜像
+    "MirrorError",
+    "MirrorVersionNotFoundError",
+    "MirrorInvalidBaseError",
+    "MirrorPackageInvalidError",
+    "MirrorBaseMismatchError",
+    "MirrorTargetCheckError",
+    "MirrorStateInvalidError",
+    "EMPTY_BASE",
+    "PARTITION_COUNT",
+    "PROJECTION_COLUMNS",
+    "ExportResult",
+    "ApplyResult",
+    "export_delta",
+    "load_package",
+    "apply_delta",
+    "mirror_status",
+    "partition_of",
+    "canonical_row_line",
+    "digest_partition",
+    "combine_partition_digests",
 ]
